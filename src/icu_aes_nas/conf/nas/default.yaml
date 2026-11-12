@@ -1,0 +1,22 @@
+strategy: evolution        # evolution | random (same budget: the mandatory baseline, D29)
+budget: 300                # low-fidelity candidates per strategy (D30)
+population: 50
+sample_size: 10
+low_fidelity_epochs: 3
+max_slots: 4
+min_slots: 2
+d_model_choices: [64, 128]
+families: [gru, tcn, attn, mamba, ffn, identity]
+stems: [linear, grud]
+heads: [last, mean, attnpool]
+inherit: true              # allow `inherit` genes (weights from trained experts)
+inherit_from: [grud, tcn, transformer, mamba]   # gru is an optional extra expert (model=gru)
+prior: uniform             # uniform | aes  (aes reads family weights from the AES router's choice frequencies)
+proxy:
+  enabled: true            # zero-cost proxy used to pre-rank offspring (logged for Kendall tau either way)
+  offspring_per_step: 4
+top_k: 5
+final_seeds: [0, 1, 2]
+time_budget_hours: 7.5     # controller stops before the SLURM limit and resubmits itself
+# Run name: keeps the D31 ablations (inherit vs scratch, uniform vs AES prior) apart on disk and in reports.
+tag: ${.strategy}_${.prior}_inherit${.inherit}

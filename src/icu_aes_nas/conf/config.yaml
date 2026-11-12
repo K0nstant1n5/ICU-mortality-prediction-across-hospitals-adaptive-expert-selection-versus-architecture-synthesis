@@ -1,0 +1,32 @@
+# Root config. Override anything from the command line, e.g.
+#   ian-train model=transformer seed=1 split_seed=0 data.sources.hirid.enabled=true
+defaults:
+  - paths: default
+  - data: pipeline_b
+  - task: mortality24
+  - model: gru
+  - trainer: default
+  - aes: default
+  - nas: default
+  - eval: default
+  - _self_
+
+pipeline: B            # B = structured multi-database. A (multimodal MIMIC-IV) plugs into the same bus later.
+seed: 0                # training seed
+split_seed: 0          # which split file to use (0, 1, 2)
+run_name: ${model.name}_s${seed}_split${split_seed}
+tracking:
+  mlflow: false        # true needs the [tracking] extra; logs stay on local disk (never send data to online services)
+
+hydra:
+  run:
+    dir: ${paths.outputs}/hydra/${now:%Y-%m-%d}/${now:%H-%M-%S}_${hydra.job.name}
+  job:
+    chdir: false
+
+# Arguments for the command-line entry points
+cli:
+  soup_stage: pretrain   # pretrain | ingredient | combine
+  ingredient: 0
+  nas_mode: search       # search | finalize | summary
+  synthetic_patients: 400

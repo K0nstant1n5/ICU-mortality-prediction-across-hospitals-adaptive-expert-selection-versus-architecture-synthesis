@@ -1,0 +1,10 @@
+max_epochs: 50
+batch_size: 256
+lr: 1.0e-3
+weight_decay: 1.0e-4
+patience: 8                 # early stopping on val AUROC (mortality) / val loss (AKI)
+num_workers: 2
+precision: 16-mixed         # falls back to 32 on CPU
+accelerator: auto
+max_time_hours: 7.5         # stop cleanly before the 8 h SLURM limit; resume from last.ckpt
+use_missingness_mask: true  # ablation (D12)

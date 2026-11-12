@@ -1,0 +1,4 @@
+name: aki
+cohort_dir: aki
+type: dynamic             # one label per hour; every block must be causal
+seq_len: 168              # up to 7 days

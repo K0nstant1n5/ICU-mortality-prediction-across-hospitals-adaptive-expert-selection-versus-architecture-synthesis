@@ -1,0 +1,9 @@
+name: grud
+kind: deep
+spec:
+  d_model: 64
+  stem: grud               # missingness-aware decay; only valid as the first block
+  blocks: [{family: gru}]
+  head: last
+  static_mode: add
+  dropout: 0.1

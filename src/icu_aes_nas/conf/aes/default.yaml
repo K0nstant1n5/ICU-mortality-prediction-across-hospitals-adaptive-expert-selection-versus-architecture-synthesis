@@ -1,0 +1,14 @@
+experts: [lgbm, grud, tcn, transformer, mamba]   # names of trained experts whose predictions are routed
+router:
+  hidden: 32
+  epochs: 200
+  lr: 1.0e-2
+  weight_decay: 1.0e-3
+  patience: 20
+knora_k: 7
+stacking_C: 1.0
+soup:
+  architecture: transformer
+  n_ingredients: 10
+  pretrain_epochs: 20
+  mask_ratio: 0.3

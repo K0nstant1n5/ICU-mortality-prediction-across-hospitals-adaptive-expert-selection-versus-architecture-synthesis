@@ -1,0 +1,9 @@
+name: gru
+kind: deep
+spec:
+  d_model: 64
+  stem: linear
+  blocks: [{family: gru}, {family: gru}]
+  head: last
+  static_mode: add
+  dropout: 0.1

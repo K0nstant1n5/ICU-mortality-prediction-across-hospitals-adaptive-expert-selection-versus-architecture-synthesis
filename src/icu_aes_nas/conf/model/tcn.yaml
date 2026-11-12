@@ -1,0 +1,9 @@
+name: tcn
+kind: deep
+spec:
+  d_model: 64
+  stem: linear
+  blocks: [{family: tcn, dilation: 1}, {family: tcn, dilation: 2}, {family: tcn, dilation: 4}, {family: tcn, dilation: 8}]
+  head: last
+  static_mode: add
+  dropout: 0.1

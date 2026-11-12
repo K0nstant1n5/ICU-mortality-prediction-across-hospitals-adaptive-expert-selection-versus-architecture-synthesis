@@ -1,0 +1,10 @@
+max_epochs: 2
+batch_size: 32
+lr: 1.0e-3
+weight_decay: 0.0
+patience: 2
+num_workers: 0
+precision: "32"
+accelerator: cpu
+max_time_hours: 0.25
+use_missingness_mask: true

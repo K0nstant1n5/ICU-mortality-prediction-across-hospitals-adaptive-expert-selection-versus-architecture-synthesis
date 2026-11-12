@@ -1,0 +1,14 @@
+name: lgbm
+kind: gbdt
+params:
+  objective: binary
+  learning_rate: 0.05
+  num_leaves: 64
+  min_child_samples: 50
+  subsample: 0.8
+  subsample_freq: 1
+  colsample_bytree: 0.8
+  n_estimators: 2000
+  verbose: -1
+early_stopping_rounds: 100
+use_count_features: true   # ablation: false removes measurement counts (charting-habit features)

@@ -1,0 +1,58 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "icu-aes-nas"
+version = "0.1.0"
+description = "Adaptive expert selection and cross-family block NAS for ICU prediction (MIMIC-IV, eICU, HiRID)."
+readme = "README.md"
+requires-python = ">=3.10,<3.13"
+authors = [{ name = "Kiril Stefanovski" }]
+dependencies = [
+    "torch>=2.2,<2.6",
+    "lightning==2.4.0",
+    "numpy>=1.26,<2.0",
+    "pandas==2.2.3",
+    "pyarrow>=16,<19",
+    "scikit-learn==1.5.2",
+    "scipy>=1.11,<1.15",
+    "lightgbm==4.5.0",
+    "hydra-core==1.3.2",
+    "omegaconf==2.3.0",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+# Fast CUDA kernels for the Mamba block. Without it a pure-PyTorch selective scan is used.
+mamba = ["mamba-ssm==2.2.2", "causal-conv1d==1.4.0"]
+tracking = ["mlflow-skinny==2.17.2"]
+dev = ["pytest==8.3.3", "ruff==0.7.4"]
+
+[project.scripts]
+ian-prepare = "icu_aes_nas.cli.prepare:main"
+ian-train = "icu_aes_nas.cli.train:main"
+ian-pretrain-soup = "icu_aes_nas.cli.soup:main"
+ian-aes = "icu_aes_nas.cli.aes:main"
+ian-nas = "icu_aes_nas.cli.nas:main"
+ian-evaluate = "icu_aes_nas.cli.evaluate:main"
+ian-make-synthetic = "icu_aes_nas.cli.synthetic:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+icu_aes_nas = ["conf/**/*.yaml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "smoke_base: end-to-end smoke test of data prep and base models",
+    "smoke_aes: end-to-end smoke test of ensembles, soup, calibration and AES",
+    "smoke_nas: end-to-end smoke test of the NAS loop",
+]
+filterwarnings = ["ignore::DeprecationWarning", "ignore::UserWarning"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py310"

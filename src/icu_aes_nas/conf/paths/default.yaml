@@ -1,0 +1,9 @@
+# All paths derive from IAN_ROOT (repo root) and IAN_DATA (data folder). Both are set by slurm/_common.sh.
+root: ${oc.env:IAN_ROOT,.}
+data: ${oc.env:IAN_DATA,${.root}/data}
+raw: ${.data}/raw                 # PhysioNet downloads: raw/miiv/{hosp,icu}, raw/eicu, raw/hirid (ricu layout)
+cohorts: ${.data}/cohorts         # YAIB-cohorts output: cohorts/<task>/<src>/{dyn,sta,outc}.parquet
+processed: ${.data}/processed     # splits, fitted preprocessing, model-ready arrays
+artifacts: ${oc.env:IAN_ARTIFACTS,${.root}/artifacts}   # checkpoints, predictions, NAS state, reports
+outputs: ${.root}/outputs
+cost_ledger: ${.artifacts}/cost_ledger.jsonl

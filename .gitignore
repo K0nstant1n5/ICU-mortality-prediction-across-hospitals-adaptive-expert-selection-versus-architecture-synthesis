@@ -1,0 +1,21 @@
+# Never commit data or anything derived from patients.
+data/
+outputs/
+artifacts/
+mlruns/
+*.parquet
+*.npy
+*.npz
+*.ckpt
+*.csv.gz
+*.fst
+lightning_logs/
+.venv/
+.r-env/
+third_party/
+__pycache__/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+slurm-*.out
+logs/

@@ -1,0 +1,10 @@
+n_bootstrap: 1000
+ci: 0.95
+ece_bins: 15
+# Pre-registered primary comparisons (D15). Holm-corrected. Names refer to prediction sets.
+primary_comparisons:
+  - [nas_best, aes_soft]
+  - [aes_soft, best_expert]
+  - [nas_best, best_expert]
+cluster_column:            # bootstrap unit per split; external eICU resamples hospitals
+  external: hospital_id

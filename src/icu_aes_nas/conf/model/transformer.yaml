@@ -1,0 +1,9 @@
+name: transformer
+kind: deep
+spec:
+  d_model: 64
+  stem: linear
+  blocks: [{family: attn}, {family: attn}]
+  head: last
+  static_mode: add
+  dropout: 0.1

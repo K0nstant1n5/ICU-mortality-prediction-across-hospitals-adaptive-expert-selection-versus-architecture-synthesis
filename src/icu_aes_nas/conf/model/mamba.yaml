@@ -1,0 +1,9 @@
+name: mamba
+kind: deep
+spec:
+  d_model: 64
+  stem: linear
+  blocks: [{family: mamba}, {family: mamba}]
+  head: last
+  static_mode: add
+  dropout: 0.1

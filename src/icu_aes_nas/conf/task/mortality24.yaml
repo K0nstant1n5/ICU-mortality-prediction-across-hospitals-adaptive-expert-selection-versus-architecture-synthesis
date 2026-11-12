@@ -1,0 +1,4 @@
+name: mortality24
+cohort_dir: mortality24   # YAIB-cohorts output folder
+type: static              # one label per stay
+seq_len: 24               # hours 0..23 are used (verify against YAIB: rows with time >= seq_len are dropped)
