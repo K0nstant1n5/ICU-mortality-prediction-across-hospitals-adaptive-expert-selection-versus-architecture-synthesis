@@ -11,7 +11,8 @@ automatically. Update the "Status" and "Next steps" sections as work progresses.
 1. **Never read, print, open or summarise real patient data.** MIMIC-IV, eICU and HiRID are credentialed PhysioNet
    datasets. Their data use agreement forbids sending records to online services, and that includes Claude.
    Do not open anything under `data/`, `artifacts/predictions/`, `*.parquet`, `*.npy`, `*.csv.gz`, checkpoints or
-   per-patient outputs. Only aggregate numbers (AUROC tables, attrition counts, metric summaries) may be shared.
+   per-patient outputs. **`logs/ian-extract-*.out` also contain patient rows** (YAIB's R scripts print table heads):
+   only `grep` them for error lines, never `tail`/`cat` them. EDA outputs (`outputs/eda/`) are aggregates. Only aggregate numbers (AUROC tables, attrition counts, metric summaries) may be shared.
    For debugging, use the fabricated data from `src/icu_aes_nas/data/synthetic.py` (ids start at 9,000,000).
 2. **Never commit data.** `data/`, `artifacts/`, `outputs/`, `*.parquet`, `*.npy` and checkpoints are gitignored.
 3. **Ask Kiril before making new methodological decisions.** Kiril explicitly asked to be consulted before any
@@ -74,7 +75,8 @@ Version A risks found during research:
 * **MIMIC-IV v2.2, not v3.1** — ricu (and therefore YAIB) only supports v2.2 (2008–2019); also keeps COVID out.
 * MIMIC-III dropped entirely (same hospital as MIMIC-IV, overlapping unlinkable patients). Four DBs in scope:
   MIMIC-IV, eICU, HiRID, AUMCdb.
-* Harmonisation via **ricu + YAIB-cohorts** (R), pinned to commit `74ac699`: 48 hourly dynamic variables + 4 statics
+* Harmonisation via **ricu + YAIB-cohorts** (R), pinned to commit `74ac699`; ricu is the `prockenschaub/ricu-package`
+  fork at `0969a52` (installed by `r/install_r_packages.R`), not CRAN ricu 0.6.0: 48 hourly dynamic variables + 4 statics
   (age, sex, height, weight), hourly grid from ICU admission.
 * **Primary task:** `mortality24` = **ICU mortality** (not in-hospital — YAIB's label is ICU mortality) predicted from
   the first 24 h, one label per stay. **Secondary:** `aki` (KDIGO), hourly onset, one label per hour, needs causal
@@ -113,14 +115,17 @@ Version A risks found during research:
 * One codebase for both versions (`pipeline: A | B` switch).
 
 ### Constraints (facts about Kiril's setup)
-* University cluster with **SLURM**; GPU type unknown (no permission to query). Jobs limited to **8 h and 8 GB**
-  (assumed RAM). Internet available. Whether R runs on the cluster is unknown.
-* No disk space locally or on the cluster → cloud plan: read raw data from PhysioNet's Google Cloud copies, run
+* University cluster with **SLURM**. GPU nodes (`gpgpu01`) have an **NVIDIA A100-SXM4-80GB** (MIG 7g.80gb = whole card).
+  Jobs run up to **8 h**; GPU jobs request 32 GB RAM, CPU jobs 4–8 GB. GPUs are often busy: CPU-only smoke tests can
+  be run with plain `bash` on the login node. Internet available on login and compute nodes. Login node has no
+  `nvcc`. R is not installed system-wide but runs from `.r-env` (micromamba).
+* Storage: the shared `/home/hpc` filesystem has plenty of free space (raw MIMIC-IV + eICU now sit in `dip/data/raw`);
+  the original cloud plan below is a fallback only. Original plan: read raw data from PhysioNet's Google Cloud copies, run
   ricu/YAIB extraction once on a spot GCE VM (e2-highmem-8, ~$0.11–0.22/h), store processed data + checkpoints in
   Cloudflare R2 (no egress fees). Expected total well under $50. Still to confirm: node-local scratch / project
   space from cluster admins, and supervisor OK on a private cloud bucket.
 * Access: MIMIC-IV, eICU, MIMIC-CXR, HiRID all OK (HiRID application text in `applications/`); **AUMCdb pending**.
-  Kiril currently has MIMIC-IV v2.2 and eICU locally in a `data/` folder.
+  MIMIC-IV v2.2 and eICU v2.0 are in `dip/data/raw/` on the cluster (downloaded 2026-11-12).
 * Course colleague is credentialed and shares the repo.
 
 ---
@@ -143,13 +148,30 @@ Version A risks found during research:
 
 ## 5. Code: `icu-aes-nas` (Pipeline B) — layout and status
 
-### Status (as of 2026-11-08)
-* Complete Pipeline B code written. **37 tests pass on CPU** (unit + 3 smoke suites) with PyTorch 2.4.1 and Lightning
-  2.4.0 on fabricated data. CLI and SLURM scripts ran end to end locally (outside SLURM).
-* **Not yet verified:** R/micromamba install and YAIB-cohorts extraction on real data; Mamba CUDA kernels and mixed
-  precision on GPU; SLURM requeue behaviour on Kiril's cluster; runtime/memory at full MIMIC-IV/eICU size.
-* **Pending from Kiril:** run `sbatch slurm/smoke_base_models.sbatch` on the cluster (all jobs now request 8 h / 32 GB / 1 GPU, matching the fraud-detection project) and check the log
-  head (GPU name, CUDA, Mamba kernel status).
+### Status (as of 2026-11-18)
+* Complete Pipeline B code. Unit tests (22 + 1 GPU-only) and the three smoke suites pass on CPU with PyTorch 2.4.1,
+  Lightning 2.4.0 and the Mamba kernels installed. On the cluster, `smoke_base_models` and `smoke_aes` passed as
+  GPU jobs (A100 80 GB).
+* **Mamba:** `mamba-ssm` 2.2.2 + `causal-conv1d` 1.4.0 installed from prebuilt wheels (no `nvcc` on the login node).
+  `core/blocks/ssm.py` now has one parameter layout and picks the CUDA `selective_scan_fn` per forward call only for
+  CUDA tensors (fixed the `x.is_cuda()` crash in `smoke_nas`); checkpoints are portable between CPU and GPU.
+  `tests/unit/test_ssm_paths.py` checks kernel = reference scan when a GPU is present — not yet run on a GPU.
+* **Data:** MIMIC-IV v2.2 and eICU v2.0 downloaded with `scripts/download_physionet.sh` into `data/raw/` and imported to
+  fst. YAIB-cohorts extraction **done for eICU** (`data/cohorts/{base,mortality24,aki}/eicu`). **MIMIC-IV extraction
+  failed** in job 2699 because ricu saw only 30/31 miiv tables: the fork's config wants `hosp/caregiver.csv.gz`,
+  v2.2 ships it in `icu/`. Fixed (2026-11-18): `extract_cohorts.sh` symlinks it; caregiver imported, ricu banner
+  now shows `miiv: 31 of 31`. **miiv cohorts extracted** (job 2709: base, mortality24, aki). HiRID download in progress (Kiril).
+* **Kiril's changes (Nov 17):** `extract_cohorts.sh` uses `.r-env` via `PATH` and skips renv (`--no-init-file`,
+  `RENV_ACTIVATE_PROJECT=FALSE`); `install_r_packages.R` pins the ricu fork; `extract_cohorts.sbatch` back to CPU,
+  8 GB, relative `logs/`; new `notebooks/eda.ipynb` + `slurm/eda.sbatch` (CPU, 3 h; aggregates to `outputs/eda/`).
+  EDA has not completed yet (job 2697 ran before any cohort existed).
+* **SLURM settings (Nov 12):** GPU jobs (train_experts, soup, nas, smoke_*) and also prepare/aes/evaluate request 8 h,
+  32 GB, 1 GPU, with absolute log paths under `dip/logs/` (`.out` + `.err`) and absolute `IAN_ROOT`, like Kiril's
+  fraud-detection project. prepare/aes/evaluate do no GPU work: their GPU line can be removed if the queue is slow.
+  `_common.sh` prints GPU name + VRAM. New: `slurm/download_physionet.sbatch` (CPU). `eda` extra added to
+  `pyproject.toml`, installed by `setup_env.sh`.
+* **Not yet verified:** MIMIC-IV cohort extraction; Mamba kernel + mixed precision inside a GPU job; SLURM requeue;
+  runtime/memory at full size.
 * Two choices made without asking (flag them if relevant): the four NAS variants are saved in separate folders
   (`nas.tag`); for the temporal holdout a patient's earliest stay decides their split.
 * HiRID is **off** by default in `conf/data/pipeline_b.yaml` (`data.sources.hirid.enabled=true` to turn on), while the
@@ -158,7 +180,9 @@ Version A risks found during research:
 ### Commands
 ```bash
 ./setup_env.sh [--cuda cpu|cu118] [--with-r] [--with-mamba]; source .venv/bin/activate
+bash scripts/download_physionet.sh [miiv] [eicu]                # PhysioNet download (asks login or ~/.netrc)
 bash scripts/extract_cohorts.sh "miiv eicu" "mortality24 aki"   # R / YAIB-cohorts, step 1
+sbatch slurm/eda.sbatch                                          # optional EDA notebook -> outputs/eda/
 ian-prepare task=mortality24                                     # splits + preprocessing, step 2
 ian-train model={lgbm,grud,tcn,transformer,mamba} seed=0 split_seed=0
 ian-pretrain-soup cli.soup_stage={pretrain|ingredient|combine} [cli.ingredient=i]
@@ -252,10 +276,12 @@ Full details: `README.md` (18 sections, including troubleshooting and outputs re
 ## 8. Open questions and next steps
 
 **Immediate (Kiril):**
-1. Run the GPU smoke job on the cluster; report the log head.
+1. `sbatch slurm/extract_cohorts.sbatch hirid` once downloaded, then `slurm/eda.sbatch`; then `ian-prepare` and check
+   `attrition.json` / split counts against the YAIB paper.
+1b. Re-run `sbatch slurm/smoke_nas.sbatch` and `smoke_base_models` on a GPU to confirm the Mamba fix with the kernel.
 2. Ask cluster admins about node-local scratch (`$TMPDIR`) / 20–50 GB project space, and whether 8 GB is RAM or GPU memory.
 3. Confirm with supervisor that a private cloud bucket is acceptable under the DUA.
-4. Run cohort extraction (`--with-r` or on a cloud VM), then `ian-prepare`; check `attrition.json` and split counts
+4. After both cohorts exist, run `ian-prepare`; check `attrition.json` and split counts
    against the YAIB paper before training.
 5. Reproduce YAIB's LightGBM and GRU numbers as the correctness check.
 6. Download HiRID, flip the toggle, keep code config and thesis text consistent.

@@ -28,6 +28,8 @@ dependencies = [
 mamba = ["mamba-ssm==2.2.2", "causal-conv1d==1.4.0"]
 tracking = ["mlflow-skinny==2.17.2"]
 dev = ["pytest==8.3.3", "ruff==0.7.4"]
+# notebooks/eda.ipynb and slurm/eda.sbatch (headless run with nbconvert)
+eda = ["matplotlib==3.10.9", "nbconvert==7.17.2", "nbclient==0.11.0", "ipykernel==7.3.0"]
 
 [project.scripts]
 ian-prepare = "icu_aes_nas.cli.prepare:main"

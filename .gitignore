@@ -19,3 +19,4 @@ __pycache__/
 .ruff_cache/
 slurm-*.out
 logs/
+wget-log*

@@ -30,8 +30,16 @@ MAX_RESUBMITS="${MAX_RESUBMITS:-20}"
 RESTARTS="${SLURM_RESTART_COUNT:-0}"
 
 echo "[$(date -Is)] job=${SLURM_JOB_ID:-local} array=${SLURM_ARRAY_TASK_ID:-} node=$(hostname) restart=${RESTARTS}"
-python -c "import torch; print('torch', torch.__version__, 'cuda', torch.cuda.is_available(), torch.cuda.get_device_name(0) if torch.cuda.is_available() else '')" || true
-echo "GPU: $(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1 || echo N/A)  VRAM: $(nvidia-smi --query-gpu=memory.total --format=csv,noheader 2>/dev/null | head -1 || echo N/A)"
+python - <<'PY' 2>/dev/null || true
+import torch
+try:  # on CPU-only jobs the node's driver is visible but no GPU is assigned; don't print a traceback for that
+    name = torch.cuda.get_device_name(0) if torch.cuda.is_available() and torch.cuda.device_count() > 0 else ''
+except Exception:
+    name = ''
+print('torch', torch.__version__, 'cuda', bool(name), name)
+PY
+gpu_q() { local v; v=$(nvidia-smi --query-gpu="$1" --format=csv,noheader 2>/dev/null | head -1) || true; echo "${v:-N/A}"; }
+echo "GPU: $(gpu_q name)  VRAM: $(gpu_q memory.total)"
 
 # run_resumable <command...>: run; on exit 75 put this same job back in the queue.
 # `scontrol requeue` keeps the job id, so `--dependency=afterok:<id>` in submit_pipeline_b.sh only fires

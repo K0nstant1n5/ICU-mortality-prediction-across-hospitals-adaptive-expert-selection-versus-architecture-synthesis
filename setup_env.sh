@@ -49,12 +49,19 @@ if ! python -c "import torch" 2>/dev/null; then
     || { echo ">> PyTorch index unreachable; falling back to the PyPI wheel (CUDA 12 build, works on CPU too)";
          pip install "torch==$TORCH_VERSION"; }
 fi
-pip install -e "$ROOT[dev,tracking]"
+pip install -e "$ROOT[dev,tracking,eda]"
 
 if [[ "$WITH_MAMBA" == 1 ]]; then
   echo ">> Installing Mamba kernels (falls back to the pure-PyTorch scan if this fails)"
-  pip install --no-build-isolation "causal-conv1d==1.4.0" "mamba-ssm==2.2.2" \
-    || echo "WARNING: mamba-ssm did not install; the pure-PyTorch Mamba block will be used."
+  # Prebuilt wheels first (no nvcc needed; match torch 2.4 / CUDA 12 / cxx11abi=False), then source build.
+  PYTAG="cp$(python -c 'import sys; print(f"{sys.version_info[0]}{sys.version_info[1]}")')"
+  WHL="cu122torch2.4cxx11abiFALSE-${PYTAG}-${PYTAG}-linux_x86_64.whl"
+  { pip install einops ninja "transformers==4.44.2" \
+    && pip install --no-deps \
+      "https://github.com/Dao-AILab/causal-conv1d/releases/download/v1.4.0/causal_conv1d-1.4.0+${WHL}" \
+      "https://github.com/state-spaces/mamba/releases/download/v2.2.2/mamba_ssm-2.2.2+${WHL}"; } \
+  || pip install --no-build-isolation "causal-conv1d==1.4.0" "mamba-ssm==2.2.2" \
+  || echo "WARNING: mamba-ssm did not install; the pure-PyTorch Mamba block will be used."
 fi
 
 # ---- YAIB-cohorts (R scripts used for extraction) -------------------------------------------------------
@@ -83,9 +90,9 @@ fi
 # ---- Check ----------------------------------------------------------------------------------------------
 python - <<'PY'
 import torch, lightning, lightgbm, sklearn, hydra
-from icu_aes_nas.core.blocks.ssm import _CudaMamba
+from icu_aes_nas.core.blocks.ssm import KERNEL_AVAILABLE
 print(f"torch {torch.__version__} | CUDA available: {torch.cuda.is_available()} | "
       f"lightning {lightning.__version__} | lightgbm {lightgbm.__version__}")
-print("Mamba kernels:", "yes" if _CudaMamba is not None else "no (pure-PyTorch fallback)")
+print("Mamba kernels:", "yes" if KERNEL_AVAILABLE else "no (pure-PyTorch fallback)")
 PY
 echo ">> Done. Activate with: source $ROOT/.venv/bin/activate"

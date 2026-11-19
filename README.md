@@ -92,12 +92,13 @@ source .venv/bin/activate
 |---|---|
 | `--cuda cpu` | CPU-only PyTorch (laptop, CI) |
 | `--cuda cu118` | Older CUDA drivers |
-| `--with-r` | Also installs R 4.2 + ricu 0.6.0 into `.r-env/` with micromamba (no root or admin needed). Only needed for cohort extraction |
-| `--with-mamba` | Tries to build the fast `mamba-ssm` CUDA kernels. If that fails, the Mamba expert falls back to a pure-PyTorch scan (same maths, slower) |
+| `--with-r` | Also installs R 4.2 into `.r-env/` with micromamba (no root or admin needed), plus ricu from the `prockenschaub/ricu-package` fork pinned to commit `0969a52` (the fork YAIB-cohorts is built for). Only needed for cohort extraction |
+| `--with-mamba` | Installs the fast `mamba-ssm` 2.2.2 / `causal-conv1d` 1.4.0 CUDA kernels from their prebuilt wheels (torch 2.4, CUDA 12; no `nvcc` needed), with `einops`, `ninja` and `transformers==4.44.2`. Falls back to a source build, then to the pure-PyTorch scan (same maths, slower) |
 
 On a cluster, load a Python module first if the system Python is too old (`module load python/3.11`). Set
 `PYTHON=/path/to/python3.11 ./setup_env.sh` to choose a specific interpreter. Running the script again is safe;
-existing environments are reused.
+existing environments are reused. The `eda` extra (matplotlib, nbconvert, ipykernel) is always installed so the
+EDA notebook can run headless.
 
 The script ends with a check that prints the torch version, whether CUDA is visible, and whether the Mamba
 kernels are in use.
@@ -106,6 +107,11 @@ kernels are in use.
 
 Download from PhysioNet into `data/raw/` using the layout ricu expects. Set `IAN_DATA=/some/other/path` if the
 data lives elsewhere, for example on a mounted cloud bucket.
+
+`bash scripts/download_physionet.sh [miiv] [eicu] [hirid]` does this for MIMIC-IV v2.2, eICU v2.0 and HiRID v1.1.1 (for HiRID only the three archives ricu uses: `reference_data`, `raw_stage/observation_tables_csv`, `raw_stage/pharma_records_csv`, unpacked into `data/raw/hirid/`): it asks for your
+PhysioNet username/password (or reads `~/.netrc`), resumes interrupted downloads and checks SHA256 sums. For a long
+download as a job: put `machine physionet.org login <user> password <pass>` in `~/.netrc` (`chmod 600`), then
+`sbatch slurm/download_physionet.sbatch`. Never put credentials in the repo.
 
 ```
 data/
@@ -168,8 +174,38 @@ What it does:
 Output per task and source: `dyn.parquet` (stay_id, time in hours, 48 variables), `sta.parquet` (statics),
 `outc.parquet` (labels; with a `time` column for AKI), plus an attrition table.
 
+Two details in `scripts/extract_cohorts.sh` matter on the cluster:
+
+* R from `.r-env` is used by putting `.r-env/env/bin` first on `PATH` (no `micromamba activate`, whose shell
+  hook breaks under `set -u`).
+* YAIB-cohorts' `R/.Rprofile` would switch on renv and hide the packages in `.r-env`, so every script runs with
+  `Rscript --no-init-file` and `RENV_ACTIVATE_PROJECT=FALSE`.
+
+**The extraction logs contain patient rows.** The YAIB R scripts print the first rows of the tables they build,
+so `logs/ian-extract-*.out` holds real records. `logs/` is gitignored; never paste these logs into chats,
+issues or online tools.
+
 If R cannot be installed on the cluster, run this step anywhere with R (a laptop, or a cloud VM) and copy
 `data/cohorts/` across. Nothing downstream needs R.
+
+### Exploratory data analysis (optional, after step 1)
+
+`notebooks/eda.ipynb` describes every database at two levels: the YAIB-cohorts output
+(`data/cohorts/<task>/<src>/`) and raw stay metadata read with `icu_aes_nas.data.sources.load_stay_metadata`.
+Sections: inventory, cohort size and attrition, label prevalence, statics, missingness (per variable and over
+time), variable distributions, MIMIC-IV vs external shift (KS tests and a LightGBM domain classifier), length of
+stay, summary table. It reads `dyn.parquet` one column at a time, so it stays under 8 GB on CPU.
+
+```bash
+sbatch slurm/eda.sbatch                                            # CPU job, 3 h, 8 GB
+EDA_SOURCES=miiv,eicu EDA_TASKS=mortality24 sbatch slurm/eda.sbatch  # optional subsets
+```
+
+Sources and tasks whose cohort folder does not exist yet are skipped with a note. HiRID and AUMCdb are
+commented out in the notebook's config cell until their cohorts exist. Output goes to `outputs/eda/`
+(`eda_executed.ipynb`/`.html`, `figures/` as PDF + PNG, `tables/` as CSV + `.tex`), which git ignores. Only
+aggregate statistics are written. Commit the notebook **with its outputs cleared**, and check the data use
+agreement before copying any figure or table off the cluster (no cells with fewer than 10 patients).
 
 ## 6. Step 2: splits and preprocessing
 
@@ -379,7 +415,7 @@ and SLURM job id. The "NAS vs AES at what compute cost" comparison is computed f
 
 ## 11. Running on SLURM (8 h / 32 GB / 1 GPU jobs)
 
-Every job script asks for 8 h, 32 GB RAM and one GPU (`--gres=gpu:1`), and every step can resume. Log paths and `IAN_ROOT` are absolute (`/home/hpc/users/ml_models/konstantin.lozhankoski/dip`), as in the other projects on this cluster; stdout goes to `logs/*.out`, stderr to `logs/*.err`:
+The GPU jobs ask for 8 h, 32 GB RAM and one GPU (`--gres=gpu:1`); the CPU-only jobs ask for less (table below). Every step can resume. Most job scripts use absolute log paths and `IAN_ROOT` (`/home/hpc/users/ml_models/konstantin.lozhankoski/dip`), with stdout in `logs/*.out` and stderr in `logs/*.err`; `extract_cohorts.sbatch` and `eda.sbatch` use relative `logs/` paths, so submit those from the repo root. Another user can set `IAN_ROOT` and pass `-o`/`-e` to `sbatch`:
 
 | Mechanism | Where |
 |---|---|
@@ -419,17 +455,19 @@ To add Hydra overrides to every job: `IAN_OVERRIDES="data.sources.hirid.enabled=
 
 | Script | Resources | Notes |
 |---|---|---|
-| `extract_cohorts.sbatch <src>` | 1 GPU (CPU work) | R/ricu, one source per job |
+| `download_physionet.sbatch [miiv] [eicu]` | CPU, 4 GB | needs `~/.netrc` (see §4) |
+| `extract_cohorts.sbatch <src>` | CPU, 8 GB | R/ricu, one source per job |
+| `eda.sbatch` | CPU, 8 GB, 3 h | runs `notebooks/eda.ipynb` headless |
 | `prepare.sbatch [task]` | 1 GPU (CPU work) | |
 | `train_experts.sbatch [task]` | 1 GPU, array 0-44 | `MODELS="gru tcn" sbatch --array=0-17 ...` for a subset |
 | `soup.sbatch <stage> [task] [split]` | 1 GPU | `--array=0-9` for ingredients |
 | `aes.sbatch [task]` | 1 GPU (CPU work), array 0-8 | |
 | `nas.sbatch [task]` | 1 GPU | env vars `STRATEGY`, `PRIOR`, `INHERIT`, `NAS_MODE` |
 | `evaluate.sbatch [task]` | 1 GPU (CPU work), array 0-8 | |
-| `smoke_{base_models,aes,nas}.sbatch` | 1 GPU | fabricated data only |
+| `smoke_{base_models,aes,nas}.sbatch` | 1 GPU | fabricated data only; can also be run with plain `bash` on the login node (CPU) |
 
-Since the GPU type is unknown, the code checks at run time: mixed precision only when CUDA is present, and the
-Mamba CUDA kernel only when it imports. Run `sbatch slurm/smoke_base_models.sbatch` first; the log
+The GPU nodes have an NVIDIA A100-SXM4-80GB (MIG 7g.80gb, i.e. the whole card). The code still checks at run time: mixed precision only when CUDA is present, and the
+Mamba CUDA kernel only when it imports and the input is on the GPU. Run `sbatch slurm/smoke_base_models.sbatch` first; the log
 prints the GPU name.
 
 ### Storage
@@ -550,8 +588,12 @@ setup_env.sh            environment setup
 |---|---|
 | `Rscript not found` | `./setup_env.sh --with-r`, or extract cohorts on another machine and copy `data/cohorts/` |
 | PyTorch download fails | The script falls back to the PyPI wheel. Or set `--cuda` to match your driver (`nvidia-smi`) |
-| `mamba-ssm` won't build | Ignore it; the pure-PyTorch Mamba block is used automatically |
-| Out of memory (8 GB) | Lower `trainer.batch_size`, keep `trainer.num_workers` at 2, and use `model.spec.d_model=64` |
+| `mamba-ssm` won't build (`bare_metal_version is not defined`) | No `nvcc` on the node. `setup_env.sh --with-mamba` now uses prebuilt wheels; otherwise ignore it, the pure-PyTorch Mamba path is used automatically |
+| `Expected x.is_cuda() to be true` in a Mamba block | Fixed: the kernel is now only used for CUDA tensors. Update `core/blocks/ssm.py` |
+| `MAMBA_ROOT_PREFIX: unbound variable` or `no package called 'argparser'` during extraction | Old `extract_cohorts.sh`; the current one sets `PATH` directly and skips renv (§5) |
+| `miiv was not found among the provided options` / banner shows `miiv: 30 of 31 tables` | ricu's miiv config wants `hosp/caregiver.csv.gz`, v2.2 has it in `icu/`. `extract_cohorts.sh` now symlinks it before importing |
+| `jupyter-nbconvert not found` | Re-run `./setup_env.sh` (installs the `eda` extra) |
+| Out of memory | Lower `trainer.batch_size`, keep `trainer.num_workers` at 2, and use `model.spec.d_model=64` |
 | A job keeps requeueing | Check `logs/`. `MAX_RESUBMITS` caps it. Delete a run's `last.ckpt` to restart it from scratch |
 | `nas.prior=aes needs ... nas_prior_seed0.json` | Run `ian-aes seed=0 split_seed=0` first |
 | `Expert predictions missing` warning in AES | That expert has not finished; AES runs on the experts it finds |
@@ -559,13 +601,18 @@ setup_env.sh            environment setup
 
 ## 18. What has and has not been verified
 
-**Verified here:** the unit tests and the three smoke suites pass on CPU with PyTorch 2.4.1 and Lightning 2.4.0,
-using fabricated data. The CLI and SLURM scripts also ran end to end locally, outside SLURM.
+**Verified (as of 2026-11-18):**
+* unit tests and the three smoke suites pass on CPU with PyTorch 2.4.1 and Lightning 2.4.0 (fabricated data),
+  including with the Mamba kernels installed;
+* on the cluster: `smoke_base_models` and `smoke_aes` pass as SLURM jobs on an A100 80 GB;
+* the R / micromamba install with the ricu fork, and the YAIB-cohorts extraction for **eICU**
+  and **MIMIC-IV** (`data/cohorts/{base,mortality24,aki}/{eicu,miiv}`);
+* MIMIC-IV v2.2 downloaded with `scripts/download_physionet.sh` and imported to fst.
 
 **Not yet verified:**
-* the R / micromamba install and the YAIB-cohorts extraction (needs the real data);
-* the Mamba CUDA kernels and mixed precision on a GPU;
-* SLURM requeue behaviour on your cluster;
+* the Mamba CUDA kernel inside a GPU job (`tests/unit/test_ssm_paths.py` compares it with the reference scan
+  when a GPU is present) and mixed precision;
+* SLURM requeue behaviour on the cluster;
 * runtime and memory on full-size MIMIC-IV and eICU.
 
 Run the smoke jobs on the cluster first, then `ian-prepare` on the real cohorts. Check `attrition.json` and the
