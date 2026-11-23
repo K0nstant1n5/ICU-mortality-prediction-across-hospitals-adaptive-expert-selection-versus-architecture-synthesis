@@ -1,0 +1,8 @@
+{
+  "name": "gru",
+  "seed": 0,
+  "best_ckpt": "/home/hpc/users/ml_models/konstantin.lozhankoski/dip/artifacts_yaibcheck/models/mortality24/split0/gru/seed0/best.ckpt",
+  "net": "/home/hpc/users/ml_models/konstantin.lozhankoski/dip/artifacts_yaibcheck/models/mortality24/split0/gru/seed0/net.pt",
+  "best_score": 0.8685906529426575,
+  "monitor": "val_auroc"
+}

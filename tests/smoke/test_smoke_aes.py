@@ -4,6 +4,7 @@ Run alone with: pytest -m smoke_aes
 """
 import pandas as pd
 import pytest
+import torch
 
 from icu_aes_nas.aes import soup
 from icu_aes_nas.aes.run import aes_dir, run_aes
@@ -40,9 +41,31 @@ def test_aes_methods_write_predictions(ws):
 
 def test_model_soup_stages(ws):
     cfg = make_cfg(ws, AES_OVERRIDE, "model.spec.d_model=16", "aes.soup.n_ingredients=2")
-    soup.pretrain(cfg)
-    for i in range(2):
-        soup.ingredient(cfg, i)
+    pre = soup.pretrain(cfg)
+    lp = soup.linear_probe(cfg)
+    pre_state = torch.load(pre["net"], map_location="cpu", weights_only=True)
+    lp_state = torch.load(lp["net"], map_location="cpu", weights_only=True)
+    # the linear probe changes only the head; the encoder stays exactly the pretrained one
+    for k, v in lp_state.items():
+        if not k.startswith("head."):
+            assert torch.equal(v, pre_state[k]), f"encoder weight changed during linear probe: {k}"
+    # every ingredient starts from the identical linear-probe weights, head included
+    seen = []
+    real_train = soup.train_deep
+
+    def spy(*args, **kwargs):
+        seen.append(kwargs["init_state"])
+        return real_train(*args, **kwargs)
+
+    soup.train_deep = spy
+    try:
+        for i in range(2):
+            soup.ingredient(cfg, i)
+    finally:
+        soup.train_deep = real_train
+    assert len(seen) == 2 and set(seen[0]) == set(lp_state)
+    for k in lp_state:
+        assert torch.equal(seen[0][k], lp_state[k]) and torch.equal(seen[1][k], lp_state[k]), k
     out = soup.combine(cfg)
     assert "soup_uniform" in str(out) or (soup.soup_root(cfg) / "report.json").exists()
 

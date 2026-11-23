@@ -7,6 +7,8 @@ def main(cfg):
     stage = cfg.cli.soup_stage
     if stage == "pretrain":
         return soup.pretrain(cfg)
+    if stage == "linear_probe":
+        return soup.linear_probe(cfg)
     if stage == "ingredient":
         return soup.ingredient(cfg, int(cfg.cli.ingredient))
     if stage == "combine":

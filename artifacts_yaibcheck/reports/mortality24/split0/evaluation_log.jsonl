@@ -1,0 +1,3 @@
+{"time": 1795371789.236196, "methods": ["gru", "lgbm"], "seed": 0}
+{"time": 1795372305.2220151, "methods": ["gru", "lgbm"], "seed": 1}
+{"time": 1795372825.5324721, "methods": ["gru", "lgbm"], "seed": 2}

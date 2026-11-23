@@ -48,13 +48,37 @@ def _resume_ckpt(run_dir: Path) -> str | None:
     return str(max(cands, key=lambda p: p.stat().st_mtime)) if cands else None
 
 
+class _FrozenEval(L.Callback):
+    """Keep frozen top-level submodules in eval mode (no dropout), so a linear probe sees fixed features.
+    Lightning calls `module.train()` at every epoch start, so this re-applies it each epoch."""
+
+    def __init__(self, frozen_children: list[str]):
+        self.frozen_children = frozen_children
+
+    def on_train_epoch_start(self, trainer, pl_module):
+        for name in self.frozen_children:
+            getattr(pl_module.net, name).eval()
+
+
+def freeze_except(net: torch.nn.Module, trainable_prefixes: tuple[str, ...]) -> list[str]:
+    """Set requires_grad=False on every parameter whose name does not start with one of `trainable_prefixes`.
+    Returns the names of top-level children that are fully frozen (for `_FrozenEval`)."""
+    for n, p in net.named_parameters():
+        p.requires_grad = n.startswith(trainable_prefixes)
+    return [name for name, child in net.named_children()
+            if not any(p.requires_grad for p in child.parameters())]
+
+
 def _precision(cfg) -> str:
     return str(cfg.trainer.precision) if torch.cuda.is_available() else "32"
 
 
 def train_deep(cfg, spec: NetworkSpec, name: str, seed: int, run_dir: Path | None = None,
                max_epochs: int | None = None, init_state: dict | None = None, pretrain_mask_ratio=None,
-               write_predictions: bool = True, method: str = "expert") -> dict:
+               write_predictions: bool = True, method: str = "expert",
+               trainable_prefixes: tuple[str, ...] | None = None) -> dict:
+    """Train one deep model. `trainable_prefixes` (e.g. ("head.",)) freezes every other parameter and keeps the
+    frozen submodules in eval mode: a linear probe on fixed features (used for the soup's LP-FT initialisation)."""
     run_dir = ensure_dir(run_dir or model_dir(cfg, name, seed))
     if (run_dir / "done.json").exists():
         log.info("%s already done, skipping", run_dir)
@@ -69,6 +93,12 @@ def train_deep(cfg, spec: NetworkSpec, name: str, seed: int, run_dir: Path | Non
     if init_state is not None:
         missing, unexpected = module.net.load_state_dict(init_state, strict=False)
         log.info("Initialised from inherited weights (missing=%d, unexpected=%d)", len(missing), len(unexpected))
+    extra_callbacks = []
+    if trainable_prefixes:
+        frozen = freeze_except(module.net, tuple(trainable_prefixes))
+        extra_callbacks.append(_FrozenEval(frozen))
+        n_train = sum(p.numel() for p in module.net.parameters() if p.requires_grad)
+        log.info("Training only %s (%d parameters); frozen in eval mode: %s", trainable_prefixes, n_train, frozen)
     atomic_write_json(spec.to_dict(), run_dir / "spec.json")
 
     monitor, mode = ("val_loss", "min") if (pretrain_mask_ratio or spec.task_type == "dynamic") else ("val_auroc", "max")
@@ -78,7 +108,7 @@ def train_deep(cfg, spec: NetworkSpec, name: str, seed: int, run_dir: Path | Non
     epochs = max_epochs or tr.max_epochs
     trainer = L.Trainer(
         max_epochs=epochs, accelerator=tr.accelerator, devices=1, precision=_precision(cfg),
-        callbacks=[ckpt, early], logger=CSVLogger(run_dir, name="logs"), default_root_dir=run_dir,
+        callbacks=[ckpt, early, *extra_callbacks], logger=CSVLogger(run_dir, name="logs"), default_root_dir=run_dir,
         max_time={"hours": float(tr.max_time_hours)}, plugins=plugins, enable_progress_bar=False,
         enable_model_summary=False, deterministic=False, log_every_n_steps=10,
     )

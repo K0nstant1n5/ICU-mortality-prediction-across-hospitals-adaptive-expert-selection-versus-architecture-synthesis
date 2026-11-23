@@ -1,0 +1,6 @@
+{
+  "name": "lgbm",
+  "seed": 2,
+  "model": "/home/hpc/users/ml_models/konstantin.lozhankoski/dip/artifacts_yaibcheck/models/mortality24/split0/lgbm/seed2/model.txt",
+  "best_iteration": 67
+}

@@ -1,0 +1,7 @@
+{
+  "aliases": {
+    "best_expert": "lgbm"
+  },
+  "n_methods": 2,
+  "n_comparisons": 0
+}

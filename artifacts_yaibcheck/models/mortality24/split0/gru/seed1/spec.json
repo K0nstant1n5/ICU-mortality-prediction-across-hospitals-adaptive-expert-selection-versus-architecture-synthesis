@@ -1,0 +1,19 @@
+{
+  "d_model": 64,
+  "stem": "linear",
+  "blocks": [
+    {
+      "family": "gru"
+    },
+    {
+      "family": "gru"
+    }
+  ],
+  "head": "last",
+  "static_mode": "add",
+  "dropout": 0.1,
+  "n_vars": 48,
+  "static_dim": 8,
+  "use_mask": true,
+  "task_type": "static"
+}

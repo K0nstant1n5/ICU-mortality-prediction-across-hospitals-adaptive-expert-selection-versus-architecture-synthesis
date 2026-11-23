@@ -59,7 +59,7 @@ code must hold their own credentials.
 | Tasks | `mortality24`: ICU mortality from the first 24 h (primary, one label per stay). `aki`: hourly AKI onset (secondary, one label per hour) |
 | Cohort | YAIB-cohorts definitions; **first ICU stay per patient** |
 | Splits | Patient-level, label-stratified 60/15/10/15 = train / val / meta / test on MIMIC-IV stays up to 2016. Stays from 2017 onward form a **temporal** holdout |
-| Repeats | 3 split seeds × 3 training seeds. NAS runs on split seed 0 |
+| Repeats | 3 split seeds × 3 training seeds, for NAS and the soup too (since 2026-11-23; before: split 0 only) |
 | Experts | LightGBM, GRU-D, TCN, Transformer, Mamba (plus GRU as an optional extra) |
 | Ensembles / AES | static best, mean ensemble, stacking, KNORA-E, soft router, hard router, oracle (upper bound) |
 | Soup | Transformer pretrained by masked reconstruction, 10 fine-tuned ingredients, uniform and greedy soup |
@@ -137,7 +137,7 @@ Sources are listed in `conf/data/pipeline_b.yaml`:
 sources:
   miiv:  {enabled: true,  role: train}
   eicu:  {enabled: true,  role: test}
-  hirid: {enabled: false, role: train}   # flip to true once downloaded and extracted
+  hirid: {enabled: true,  role: train}   # on since 2026-11-22 (pooled MIMIC-IV + HiRID)
   aumc:  {enabled: false, role: train}   # access pending; no code change needed later
 ```
 
@@ -325,11 +325,12 @@ All outputs are temperature-scaled on meta. The run also writes:
   prior),
 * `report_seed*.json`.
 
-**Model soup** (`aes/soup.py`) has three stages:
+**Model soup** (`aes/soup.py`) has four stages:
 
 ```bash
 ian-pretrain-soup cli.soup_stage=pretrain                       # masked-reconstruction pretraining
-ian-pretrain-soup cli.soup_stage=ingredient cli.ingredient=0    # … up to 9: fine-tunes with varied lr/seed
+ian-pretrain-soup cli.soup_stage=linear_probe                   # head only, frozen encoder: shared init (LP-FT)
+ian-pretrain-soup cli.soup_stage=ingredient cli.ingredient=0    # … up to 9: fine-tunes from the LP weights, varied lr/seed
 ian-pretrain-soup cli.soup_stage=combine                        # uniform soup, greedy soup (on meta), baselines
 ```
 
@@ -445,11 +446,31 @@ squeue -u $USER          # logs in logs/
 ```
 prepare ─┬─ train_experts (array: 3 splits × 5 models × 3 seeds = 45)
          │      ├── aes (array: 3 splits × 3 seeds) ─────────────┐
-         │      └── nas search ×4 variants → nas finalize ×4 ──────┤
-         └─ soup pretrain → soup ingredients (array 0-9) → combine ┴── evaluate (array 9)
+         │      └── nas search ×4 → finalize ×4, per split ──────┤
+         └─ soup (per split): pretrain → linear probe → ingredients (array 0-9) → combine ┴── evaluate (array 9)
 ```
 
 To add Hydra overrides to every job: `IAN_OVERRIDES="data.sources.hirid.enabled=true" bash slurm/submit_pipeline_b.sh`.
+
+NAS and the soup run on every split in `NAS_SPLITS` (default `0 1 2`), e.g. `NAS_SPLITS=0 bash slurm/submit_pipeline_b.sh`.
+`DRY_RUN=1` prints the `sbatch` commands without submitting.
+
+### Follow-up runs
+
+`slurm/submit_followup.sh` queues everything that comes after the first mortality24 run, with dependencies:
+
+```bash
+DRY_RUN=1 bash slurm/submit_followup.sh      # check the commands first
+bash slurm/submit_followup.sh                # all parts; or name some: splits nomask lodo aki
+```
+
+| Part | What it runs | Output |
+|---|---|---|
+| `splits` | NAS (4 variants) + soup on split seeds 1 and 2 | `artifacts/` (next to split 0) |
+| `nomask` | deep experts with `trainer.use_missingness_mask=false`, LightGBM with `model.use_count_features=false` (3 splits × 3 seeds) | `<model>_nomask`, `lgbm_nocounts`; never picked as `best_expert` |
+| (after both) | `evaluate.sbatch mortality24`, all 9 runs | `artifacts/reports/` |
+| `lodo` | leave-one-database-out: HiRID held out, MIMIC-IV held out (eICU held out = main run); prepare → experts → AES + main NAS variant on split 0 → evaluate (`LODO_NAS=0` skips NAS) | `data/processed_lodo_<db>/`, `artifacts_lodo_<db>/` (own cost ledger) |
+| `aki` | `submit_pipeline_b.sh aki` | `artifacts/` under task `aki` |
 
 ### Individual jobs
 
@@ -522,7 +543,7 @@ reuses everything above. Only additions are needed; nothing in Pipeline B change
 ```bash
 pytest tests/unit             # splits, preprocessing, block causality, statistics, NAS genomes (seconds)
 pytest -m smoke_base          # synthetic data → prepare → all 6 deep/GBDT experts → predictions; AKI; ablation
-pytest -m smoke_aes           # experts → all AES methods → soup (3 stages) → evaluation report
+pytest -m smoke_aes           # experts → all AES methods → soup (4 stages) → evaluation report
 pytest -m smoke_nas           # evolution, random, scratch, AES prior, resume after interruption, finalize
 ```
 
@@ -550,7 +571,7 @@ artifacts/
 ├── predictions/<task>/split<k>/<method>/seed<s>.parquet
 │       columns: source, split, row, time, stay_id, hospital_id, y, logit, p
 ├── aes/<task>/split<k>/                         report, router weights, nas prior
-├── soup/<task>/split<k>/transformer/            pretrain/, ingredient<i>/, report.json
+├── soup/<task>/split<k>/transformer/            pretrain/, linear_probe/, ingredient<i>/, report.json
 ├── nas/<task>/split<k>/<tag>/                   state.json, history.jsonl, candidates/, final/, final.json
 ├── reports/<task>/split<k>/                     metrics, comparisons, summary, evaluation_log.jsonl
 └── cost_ledger.jsonl

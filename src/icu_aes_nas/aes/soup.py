@@ -1,8 +1,9 @@
 """Model soup for one architecture (D18): pretrain once, fine-tune N ingredients, average weights.
 
 Stages (each can run as its own SLURM job; all are resumable):
-    pretrain   -> masked-value reconstruction on MIMIC train, saved as the shared starting checkpoint
-    ingredient -> fine-tune copy i from the shared checkpoint (different seed and learning rate)
+    pretrain     -> masked-value reconstruction on the train split
+    linear_probe -> head-only training on the frozen pretrained encoder (LP of LP-FT); the shared starting point
+    ingredient   -> fine-tune copy i from the linear-probe weights, head included (different seed and learning rate)
     combine    -> uniform soup, greedy soup (selection on meta), and the ensemble of the same ingredients
 """
 
@@ -43,10 +44,22 @@ def pretrain(cfg) -> dict:
                       write_predictions=False, method="soup")
 
 
-def ingredient(cfg, i: int) -> dict:
+def linear_probe(cfg) -> dict:
+    """LP step of LP-FT (Kumar et al. 2022): fit only the classification head on the frozen pretrained encoder
+    (train split, early stopping on val AUROC). Its weights, head included, are the common starting point of all
+    ingredients, as model soups require (Wortsman et al. 2022). A random head per ingredient breaks averaging."""
     pre = read_json(soup_root(cfg) / "pretrain" / "done.json")
     state = torch.load(pre["net"], map_location="cpu", weights_only=True)
-    state = {k: v for k, v in state.items() if not k.startswith("head.")}   # fresh head per ingredient
+    state = {k: v for k, v in state.items() if not k.startswith("head.")}   # pretraining head reconstructs values
+    return train_deep(cfg, _spec(cfg), "soup_linear_probe", seed=0, run_dir=soup_root(cfg) / "linear_probe",
+                      init_state=state, write_predictions=False, method="soup", trainable_prefixes=("head.",))
+
+
+def ingredient(cfg, i: int) -> dict:
+    lp = soup_root(cfg) / "linear_probe" / "done.json"
+    if not lp.exists():
+        raise FileNotFoundError(f"{lp} missing: run the soup stage `linear_probe` first")
+    state = torch.load(read_json(lp)["net"], map_location="cpu", weights_only=True)   # identical init, head included
     rng = np.random.default_rng(i)
     cfg_i = copy.deepcopy(cfg)
     cfg_i.trainer.lr = float(cfg.trainer.lr * rng.choice([0.3, 0.5, 1.0, 2.0]))
@@ -97,7 +110,7 @@ def combine(cfg) -> dict:
     p = np.mean([1 / (1 + np.exp(-q["logit"].to_numpy())) for q in preds], axis=0).clip(1e-7, 1 - 1e-7)
     ens["logit"] = np.log(p / (1 - p))
     save_predictions(ens, predictions_path(cfg, "soup_ingredient_ensemble", 0))
-    report = {"n_ingredients": len(states), "meta_auroc_single": scores, "greedy_members": [int(g) for g in greedy],
+    report = {"n_ingredients": len(states), "init": "linear_probe (LP-FT)", "meta_auroc_single": scores, "greedy_members": [int(g) for g in greedy],
               "meta_auroc_greedy": best}
     atomic_write_json(report, root / "report.json")
     return report

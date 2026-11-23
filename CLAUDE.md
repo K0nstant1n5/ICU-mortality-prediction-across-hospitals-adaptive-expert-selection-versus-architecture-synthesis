@@ -87,7 +87,7 @@ Version A risks found during research:
   stay decides their split). eICU = external, **never used for any decision**.
   * `train` fits weights; `val` early stopping, model selection, NAS fitness; `meta` fits routers, stacking, KNORA-E,
     temperature scaling, greedy soup (so combiners never see data the experts were tuned on); `test` in-distribution.
-* **Repeats:** 3 split seeds × 3 training seeds; NAS on split seed 0 only.
+* **Repeats:** 3 split seeds × 3 training seeds for everything. **Changed 2026-11-23 (Kiril):** NAS (all 4 variants) and the soup now also run on split seeds 1 and 2 (before: split 0 only), so NAS vs AES is matched run for run. Decided after the first results; all splits are reported whatever they show, and the change is stated in the methods.
 * **Missingness masks** on, with an on/off ablation per expert (tests the "charting habits" hypothesis: count /
   missingness features help on MIMIC but hurt on eICU — a 2026 study found this).
 * **Selection metric:** validation AUROC. **Calibration:** temperature scaling on meta, never refit on test sets.
@@ -102,7 +102,13 @@ Version A risks found during research:
 * **Experts:** LightGBM, GRU-D, TCN, Transformer, Mamba (+ GRU optional). Raindrop only if porting works in ~1 week.
 * **AES / ensembles:** static best, mean ensemble, stacking, KNORA-E, soft router, hard router, oracle (upper bound only).
 * **Model soup:** Transformer only, pretrained once by masked-value reconstruction, 10 fine-tuned ingredients,
-  uniform + greedy soup. Soups across different architectures don't work.
+  uniform + greedy soup. Soups across different architectures don't work. **Head init = LP-FT (Kiril, 2026-11-23):**
+  a linear probe (head only, frozen encoder in eval mode, train split, early stopping on val AUROC) is fitted once;
+  all 10 ingredients start from its weights, head included [Kumar et al. 2022, LP-FT; Wortsman et al. 2022] (verify).
+  Reason: the first run gave every ingredient a fresh random head, so the uniform soup averaged unrelated heads
+  (eICU ECE 0.239, below every ingredient; greedy kept 1 of 10). That run is archived in
+  `artifacts/soup_archive_randomhead_2026-11-22/`; its cost-ledger rows (`soup_ingredient*` from SLURM jobs 2926 and 2982–2990) must
+  be excluded from the soup's cost. Valid soup = jobs 2925 (pretrain), 3004 (LP), 3005 + 3008–3016 (ingredients).
 * **NAS:** regularised evolution + random search with the same budget. 300 low-fidelity candidates, top-5 retrained
   with 3 seeds. Built-in ablations: inherit vs scratch weights, uniform vs AES-guided family prior.
 * **Cost logging** (GPU-h, params, FLOPs, memory, wall time) for every run from day one.
@@ -148,7 +154,22 @@ Version A risks found during research:
 
 ## 5. Code: `icu-aes-nas` (Pipeline B) — layout and status
 
-### Status (as of 2026-11-18)
+### Status (as of 2026-11-23)
+* **Full pipeline (mortality24, HiRID on) ran 2026-11-22/23:** prepare, 45 experts, AES, 4 NAS variants (300
+  candidates each, top-5 × 3 seeds), soup — no errors. Split-0 val AUROC: GRU-D 85.3 best expert; NAS finals
+  85.3–85.7. Seed-0 eICU AUROC (preliminary): stacking 85.4, aes_soft 85.0, mean ensemble 84.8, lgbm 84.1, grud 83.7,
+  NAS 83.0–83.6.
+* **Soup re-run with LP-FT done + all 9 evaluation seeds (2026-11-23).** Results, mortality24, AUROC mean over runs
+  (experts/AES: 3 splits × 3 seeds; NAS: split 0 × 3 seeds; soup: 1 run), internal test / temporal / HiRID test / eICU:
+  stacking 88.3/89.9/88.1/**85.0**; aes_soft 88.0/89.7/88.0/84.7 (best eICU ECE 0.006); mean ens 87.8/89.6/87.5/84.5;
+  lgbm (= best_expert on val) 87.2/88.9/86.8/84.1; grud 87.2/88.4/86.8/83.3; soup_uniform 87.8/88.7/87.3/84.1 (ECE
+  0.012, was 0.239 with random heads; greedy kept 2/10 and generalised worse than uniform: 83.2 on eICU); NAS main
+  (evolution_uniform_inheritTrue) 87.6/88.4/86.2/83.1; NAS scratch (inheritFalse) 83.4, random 83.2, AES prior 83.1.
+  Primary comparisons (Holm): aes_soft > lgbm on eICU in 8/9 runs (+0.65); NAS < aes_soft on eICU 3/3 (−1.9) and
+  temporal 3/3 (−1.1); NAS < lgbm on eICU 3/3 (−1.0); internal-test differences not significant.
+  GPU-h: NAS 3.2 (4 variants), experts 0.30 (45 runs), soup 0.09, AES 0.01.
+* `train_deep(..., trainable_prefixes=("head.",))` freezes everything else and keeps frozen children in eval mode
+  (used by the soup linear probe); smoke test checks encoder unchanged + identical ingredient init.
 * Complete Pipeline B code. Unit tests (22 + 1 GPU-only) and the three smoke suites pass on CPU with PyTorch 2.4.1,
   Lightning 2.4.0 and the Mamba kernels installed. On the cluster, `smoke_base_models` and `smoke_aes` passed as
   GPU jobs (A100 80 GB).
@@ -174,8 +195,14 @@ Version A risks found during research:
   runtime/memory at full size.
 * Two choices made without asking (flag them if relevant): the four NAS variants are saved in separate folders
   (`nas.tag`); for the temporal holdout a patient's earliest stay decides their split.
-* HiRID is **off** by default in `conf/data/pipeline_b.yaml` (`data.sources.hirid.enabled=true` to turn on), while the
-  thesis text says MIMIC-IV + HiRID pooled — keep these consistent once HiRID is downloaded.
+* HiRID is **on** in `conf/data/pipeline_b.yaml` since 2026-11-22 (pooled MIMIC-IV + HiRID → eICU), consistent with
+  the thesis text. All three cohorts extracted; EDA done (`outputs/eda/`: databases nearly perfectly separable by a
+  domain classifier, AUROC ≈ 0.999, driven by charting habits, e.g. methb measured in 91 % of HiRID stays vs <1 % in
+  MIMIC-IV; HiRID AKI prevalence 23 % vs ~40 %).
+* **YAIB reproduction check passed (2026-11-22)**, MIMIC-IV only → eICU, split 0, 3 seeds, separate folders
+  `data/processed_yaibcheck`, `artifacts_yaibcheck`: GRU AUROC 86.6 internal / 81.5 eICU (YAIB 87.6 / 81.7), AUPRC
+  39.6 / 28.8 (YAIB 42.8 / 28.0); LightGBM 87.1 / 83.3; temporal 87.9 (GRU) / 88.4 (LGBM). GRU trains in ~17 s on the
+  A100. Note: `ian-evaluate` bootstrap (1000, eICU clustered by hospital) takes ~10 min per seed on CPU.
 
 ### Commands
 ```bash
@@ -185,11 +212,12 @@ bash scripts/extract_cohorts.sh "miiv eicu" "mortality24 aki"   # R / YAIB-cohor
 sbatch slurm/eda.sbatch                                          # optional EDA notebook -> outputs/eda/
 ian-prepare task=mortality24                                     # splits + preprocessing, step 2
 ian-train model={lgbm,grud,tcn,transformer,mamba} seed=0 split_seed=0
-ian-pretrain-soup cli.soup_stage={pretrain|ingredient|combine} [cli.ingredient=i]
+ian-pretrain-soup cli.soup_stage={pretrain|linear_probe|ingredient|combine} [cli.ingredient=i]
 ian-aes seed=0 split_seed=0
 ian-nas nas.strategy=evolution nas.prior=uniform nas.inherit=true cli.nas_mode={search|finalize|summary}
 ian-evaluate seed=0 split_seed=0
-bash slurm/submit_pipeline_b.sh mortality24                      # whole chain with afterok dependencies
+bash slurm/submit_pipeline_b.sh mortality24                      # whole chain with afterok dependencies (NAS + soup on NAS_SPLITS, default "0 1 2")
+bash slurm/submit_followup.sh [splits] [nomask] [lodo] [aki]      # follow-up runs after the first mortality run; DRY_RUN=1 prints only
 pytest tests/unit; pytest -m smoke_base; pytest -m smoke_aes; pytest -m smoke_nas
 ```
 Fake-data demo: `export IAN_ROOT=$PWD/tmp_demo; ian-make-synthetic cli.synthetic_patients=150; ian-prepare data.n_split_seeds=1; ian-train trainer=smoke model=tcn model.spec.d_model=16 …`
@@ -276,15 +304,11 @@ Full details: `README.md` (18 sections, including troubleshooting and outputs re
 ## 8. Open questions and next steps
 
 **Immediate (Kiril):**
-1. `sbatch slurm/extract_cohorts.sbatch hirid` once downloaded, then `slurm/eda.sbatch`; then `ian-prepare` and check
-   `attrition.json` / split counts against the YAIB paper.
+1. `bash slurm/submit_followup.sh` (queued 2026-11-23?): NAS + soup on splits 1–2, missingness ablation (`<model>_nomask`, `lgbm_nocounts`), mortality re-evaluation; LODO folds (HiRID / MIMIC-IV held out → `artifacts_lodo_<db>`, experts + AES + main NAS variant on split 0 (Kiril, 2026-11-23)); full AKI pipeline. Then check results.
 1b. Re-run `sbatch slurm/smoke_nas.sbatch` and `smoke_base_models` on a GPU to confirm the Mamba fix with the kernel.
 2. Ask cluster admins about node-local scratch (`$TMPDIR`) / 20–50 GB project space, and whether 8 GB is RAM or GPU memory.
 3. Confirm with supervisor that a private cloud bucket is acceptable under the DUA.
-4. After both cohorts exist, run `ian-prepare`; check `attrition.json` and split counts
-   against the YAIB paper before training.
-5. Reproduce YAIB's LightGBM and GRU numbers as the correctness check.
-6. Download HiRID, flip the toggle, keep code config and thesis text consistent.
+(Done: cohorts for all three DBs, `ian-prepare`, YAIB reproduction check, HiRID download + toggle.)
 
 **Waiting on results (Part C of decisions file — don't decide early):** lock A, B or both (needs ECG/CXR coverage
 audit + access timing); keep Raindrop; keep AKI; Version A fusion points/windows; fine-tune vs frozen encoders;
